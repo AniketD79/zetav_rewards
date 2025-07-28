@@ -24,7 +24,6 @@ const upload = multer({ storage });
 
 
 //Create a Post (Admin / Manager only)
-
 router.post('/', verifyToken, upload.single('image'), async (req, res) => {
   const { receiver_id, reason, points } = req.body;
   const user = req.user;
@@ -47,6 +46,10 @@ router.post('/', verifyToken, upload.single('image'), async (req, res) => {
   }
 });
 
+
+//Get Feed (All Users)
+
+//Enhanced Feed With Like Count, Comment Count, Comments & Comment Likes
 router.get('/feed', verifyToken, async (req, res) => {
   try {
     // Step 1: Get posts with like & comment count
@@ -99,8 +102,9 @@ router.get('/feed', verifyToken, async (req, res) => {
   }
 });
 
-//Like / Unlike Post
 
+
+//Like / Unlike Post
 router.post('/:id/like', verifyToken, async (req, res) => {
   const post_id = req.params.id;
   const user_id = req.user.id;
@@ -122,5 +126,6 @@ router.post('/:id/like', verifyToken, async (req, res) => {
     res.status(500).json({ message: err.message });
   }
 });
+
 
 module.exports = router;
