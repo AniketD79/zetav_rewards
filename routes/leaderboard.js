@@ -28,7 +28,7 @@ router.get('/managers', verifyToken, requireRole('admin'), async (req, res) => {
 });
 
 // Admin calls this with any manager id; manager calls with their own ID
-// Returns employee list (basic info) under that manager
+
 router.get('/managers/:managerId/employees', verifyToken, requireRole('admin', 'manager'), async (req, res) => {
   const managerId = req.params.managerId;
 
@@ -62,7 +62,7 @@ router.get('/managers/:managerId/employees', verifyToken, requireRole('admin', '
 // Employee Leaderboard: employees under their manager
 router.get('/employee/peers', verifyToken, requireRole('employee'), async (req, res) => {
   try {
-    // Get current user’s manager_id
+    // Get current user's manager_id
     const [[{ manager_id }]] = await pool.query(
       'SELECT manager_id FROM users WHERE id = ?',
       [req.user.id]
@@ -72,7 +72,7 @@ router.get('/employee/peers', verifyToken, requireRole('employee'), async (req, 
       return res.status(400).json({ message: 'No manager assigned.' });
     }
 
-    // Get peers under the same manager, excluding self (optional)
+   
     const [peers] = await pool.query(
       `SELECT 
          u.id,
@@ -83,10 +83,10 @@ router.get('/employee/peers', verifyToken, requireRole('employee'), async (req, 
        FROM users u
        LEFT JOIN departments d ON u.department_id = d.id
        LEFT JOIN reward_points rp ON rp.receiver_id = u.id
-       WHERE u.manager_id = ? AND u.role = 'employee' AND u.id != ?
+       WHERE u.manager_id = ? AND u.role = 'employee'
        GROUP BY u.id, d.name
-       ORDER BY u.name ASC`,
-      [manager_id, req.user.id]
+       ORDER BY total_points DESC`,
+      [manager_id]  
     );
 
     res.json(peers);

@@ -87,7 +87,7 @@ router.get('/employees/:id', verifyToken, requireRole('manager'), async (req, re
 
 // Reward Assigned Employee with Auto Post
 router.post('/rewardpoint', verifyToken, requireRole('manager'), async (req, res) => {
-  const { receiver_id, points, reason, reason_id } = req.body;
+  const { receiver_id, points, reason, reason_id, caption } = req.body; 
 
   try {
     const isAssigned = await isMyEmployee(req.user.id, receiver_id);
@@ -144,14 +144,14 @@ router.post('/rewardpoint', verifyToken, requireRole('manager'), async (req, res
       imageUrl = `/post_images/${files[Math.floor(Math.random() * files.length)]}`;
     }
 
-
+    // Updated INSERT to include caption
     await pool.query(
-      'INSERT INTO posts (giver_id, receiver_id, points, reason, image_url) VALUES (?, ?, ?, ?, ?)',
-      [req.user.id, receiver_id, points, reason || '', imageUrl]
+      'INSERT INTO posts (giver_id, receiver_id, points, reason, image_url, caption) VALUES (?, ?, ?, ?, ?, ?)',
+      [req.user.id, receiver_id, points, reason || '', imageUrl, caption || null]
     );
 
     await logAudit(req.user.id, 'manager', 'Reward Given with Post',
-      `Rewarded ${points} pts to employee ${receiver_id} with reason id ${reason_id || 'N/A'}`
+      `Rewarded ${points} pts to employee ${receiver_id} with reason id ${reason_id || 'N/A'}${caption ? ` and caption: ${caption}` : ''}`
     );
 
     res.json({ message: 'Rewarded successfully and post created.' });

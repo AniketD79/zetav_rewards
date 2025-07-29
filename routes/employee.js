@@ -40,7 +40,7 @@ router.get('/me', verifyToken, async (req, res) => {
   try {
     // Select only needed columns, no *
     const [[user]] = await pool.query(
-      `SELECT u.id, u.name, u.email, u.role, u.profile_picture, u.contact_info,
+      `SELECT u.id, u.name, u.email, u.role, u.profile_picture, u.contact_info,u.employee_id,  u.date_of_joining,  
               d.name AS department_name,
               u.manager_id
        FROM users u
