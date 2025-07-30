@@ -126,25 +126,19 @@ router.post('/rewardpoint', verifyToken, requireRole('manager'), async (req, res
       [points, req.user.id]
     );
 
+    // Use only the image associated with the reason_id, no fallback!
     let imageUrl = null;
     if (reasonImage) {
-      imageUrl = `/post_images/${reasonImage}`;
       const imagePath = path.join(__dirname, '..', 'post_images', reasonImage);
-      if (!fs.existsSync(imagePath)) {
-        imageUrl = null; // fallback to random below
+      if (fs.existsSync(imagePath)) {
+        imageUrl = `/post_images/${reasonImage}`;
+      } else {
+        // If image file is missing, do NOT assign any image URL
+        imageUrl = null;
       }
     }
 
-    if (!imageUrl) {
-      const imagesDir = path.join(__dirname, '..', 'post_images');
-      const files = fs.readdirSync(imagesDir).filter(file => /\.(jpg|jpeg|png|gif)$/i.test(file));
-      if (files.length === 0) {
-        return res.status(500).json({ message: 'No images found in post_images folder' });
-      }
-      imageUrl = `/post_images/${files[Math.floor(Math.random() * files.length)]}`;
-    }
-
-    // Updated INSERT to include caption
+    // Insert the post with imageUrl that is either the reasonImage (if file exists) or null — no random
     await pool.query(
       'INSERT INTO posts (giver_id, receiver_id, points, reason, image_url, caption) VALUES (?, ?, ?, ?, ?, ?)',
       [req.user.id, receiver_id, points, reason || '', imageUrl, caption || null]

@@ -146,4 +146,117 @@ router.post('/:id/like', verifyToken, async (req, res) => {
 });
 
 
+//Comment on Post
+router.post('/:id/comment', verifyToken, async (req, res) => {
+  const { comment_text } = req.body;
+  const post_id = req.params.id;
+  const user_id = req.user.id;
+
+  try {
+    await pool.query(
+      'INSERT INTO comments (post_id, user_id, comment_text) VALUES (?, ?, ?)',
+      [post_id, user_id, comment_text]
+    );
+    await logAudit(user_id, req.user.role, 'Comment Added', `Post ${post_id}`);
+    res.json({ message: 'Comment added' });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+
+//Like / Unlike Comment
+router.post('/comments/:id/like', verifyToken, async (req, res) => {
+  const comment_id = req.params.id;
+  const user_id = req.user.id;
+
+  try {
+    const [[liked]] = await pool.query(
+      'SELECT * FROM comment_likes WHERE comment_id = ? AND user_id = ?',
+      [comment_id, user_id]
+    );
+
+    if (liked) {
+      await pool.query('DELETE FROM comment_likes WHERE id = ?', [liked.id]);
+      return res.json({ message: 'Unliked comment' });
+    } else {
+      await pool.query('INSERT INTO comment_likes (comment_id, user_id) VALUES (?, ?)', [
+        comment_id,
+        user_id,
+      ]);
+      return res.json({ message: 'Liked comment' });
+    }
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+
+//Delete Comment (admin or owner)
+router.delete('/comments/:id', verifyToken, async (req, res) => {
+  const comment_id = req.params.id;
+  const user_id = req.user.id;
+  const user_role = req.user.role;
+
+  try {
+    const [[comment]] = await pool.query('SELECT * FROM comments WHERE id = ?', [comment_id]);
+    if (!comment) return res.status(404).json({ message: 'Comment not found' });
+
+    if (comment.user_id !== user_id && user_role !== 'admin') {
+      return res.status(403).json({ message: 'Not allowed to delete' });
+    }
+
+    await pool.query('DELETE FROM comments WHERE id = ?', [comment_id]);
+    await logAudit(user_id, user_role, 'Comment Deleted', `Comment ID: ${comment_id}`);
+    res.json({ message: 'Comment deleted' });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+
+//Edit Post (Manager = own only, Admin = all)
+router.put('/:id', verifyToken, async (req, res) => {
+  const post_id = req.params.id;
+  const { reason, points, image_url } = req.body;
+  const { id: user_id, role } = req.user;
+
+  try {
+    const [[post]] = await pool.query('SELECT * FROM posts WHERE id = ?', [post_id]);
+    if (!post) return res.status(404).json({ message: 'Post not found' });
+
+    // Only admin or post creator (if manager)
+    if (role === 'manager' && post.giver_id !== user_id) {
+      return res.status(403).json({ message: 'Not allowed to edit post' });
+    }
+
+    await pool.query(
+      'UPDATE posts SET reason = ?, points = ?, image_url = ? WHERE id = ?',
+      [reason || post.reason, points || post.points, image_url || post.image_url, post_id]
+    );
+
+    await logAudit(user_id, role, 'Post Edited', `Post ID: ${post_id}`);
+    res.json({ message: 'Post updated' });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+
+//Delete Post (Admin only)
+router.delete('/:id', verifyToken, async (req, res) => {
+  const { role } = req.user;
+  const post_id = req.params.id;
+
+  if (role !== 'admin') return res.status(403).json({ message: 'Only admin can delete posts' });
+
+  try {
+    await pool.query('DELETE FROM posts WHERE id = ?', [post_id]);
+    await logAudit(req.user.id, role, 'Post Deleted', `Post ID: ${post_id}`);
+    res.json({ message: 'Post deleted' });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
 module.exports = router;
