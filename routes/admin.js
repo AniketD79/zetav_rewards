@@ -72,19 +72,43 @@ router.delete('/users/:id', verifyToken, requireRole('admin'), async (req, res) 
 });
 
 //Assign Points to Manager
+
 router.post('/assign-points', verifyToken, requireRole('admin'), async (req, res) => {
-  const { manager_id, points_assigned } = req.body;
+  const admin_id = req.user.id;
+  const { manager_id, points } = req.body;
+
+  if (!manager_id || !points || points <= 0) {
+    return res.status(400).json({ message: 'manager_id and positive points are required.' });
+  }
+
   try {
-    await pool.query(
-      'INSERT INTO manager_points (manager_id, points_assigned, remaining_points) VALUES (?, ?, ?)',
-      [manager_id, points_assigned, points_assigned]
-    );
-    await logAudit(req.user.id, 'admin', 'Points Assigned', `Assigned ${points_assigned} to manager ${manager_id}`);
-    res.json({ message: 'Points assigned to manager.' });
+    const [budgetRows] = await pool.query('SELECT remaining_points FROM admin_budget WHERE admin_id = ?', [admin_id]);
+
+    if (budgetRows.length === 0) {
+      return res.status(400).json({ message: 'Admin budget not set. Please add budget first.' });
+    }
+
+    const remaining_points = budgetRows[0].remaining_points;
+
+    if (points > remaining_points) {
+      return res.status(400).json({ message: `Insufficient points in budget. Remaining points: ${remaining_points}` });
+    }
+
+    // Assign points to manager (existing table)
+    await pool.query('INSERT INTO manager_points (manager_id, points_assigned, remaining_points) VALUES (?, ?, ?)', [manager_id, points, points]);
+
+    // Deduct assigned points from admin remaining_points
+    await pool.query('UPDATE admin_budget SET remaining_points = remaining_points - ? WHERE admin_id = ?', [points, admin_id]);
+
+    await logAudit(admin_id, 'admin', 'Points Assigned', `Assigned ${points} points to manager ${manager_id}`);
+
+    return res.json({ message: 'Points assigned to manager successfully.' });
+
   } catch (err) {
-    res.status(500).json({ message: err.message });
+    return res.status(500).json({ message: err.message });
   }
 });
+
 
 router.get('/all/redemptions', verifyToken, requireRole('admin'), async (req, res) => {
   try {
@@ -200,6 +224,112 @@ router.delete('/departments/:id', verifyToken, requireRole('admin'), async (req,
   }
 });
 
+
+// Add or Update Admin Budget (top-up points, edit point_value)
+router.post('/budget', verifyToken, requireRole('admin'), async (req, res) => {
+  const admin_id = req.user.id;
+  const { total_points, point_value } = req.body;
+
+  if (total_points == null || point_value == null) {
+    return res.status(400).json({ message: 'total_points and point_value are required.' });
+  }
+
+  try {
+    const [existing] = await pool.query('SELECT * FROM admin_budget WHERE admin_id = ?', [admin_id]);
+
+    if (existing.length === 0) {
+      // Insert new budget record
+      await pool.query(
+        'INSERT INTO admin_budget (admin_id, total_points, remaining_points, point_value) VALUES (?, ?, ?, ?)',
+        [admin_id, total_points, total_points, point_value]
+      );
+    } else {
+      // Update: add total_points to both total and remaining (top-up)
+      await pool.query(
+        `UPDATE admin_budget 
+         SET total_points = total_points + ?, 
+             remaining_points = remaining_points + ?, 
+             point_value = ? 
+         WHERE admin_id = ?`,
+        [total_points, total_points, point_value, admin_id]
+      );
+    }
+
+    await logAudit(admin_id, 'admin', 'Admin Budget Updated', `Added ${total_points} points at value ${point_value}`);
+
+    return res.json({ message: 'Admin budget updated successfully.' });
+
+  } catch (err) {
+    return res.status(500).json({ message: err.message });
+  }
+});
+
+router.get('/budget', verifyToken, requireRole('admin'), async (req, res) => {
+  const admin_id = req.user.id;
+
+  try {
+    const [rows] = await pool.query('SELECT total_points, remaining_points, point_value FROM admin_budget WHERE admin_id = ?', [admin_id]);
+
+    if (rows.length === 0) {
+      return res.status(404).json({ message: 'Admin budget not found.' });
+    }
+
+    return res.json(rows[0]);
+
+  } catch (err) {
+    return res.status(500).json({ message: err.message });
+  }
+});
+
+// PUT /admin/budget - Update admin's budget (total points and point value)
+router.put('/budget', verifyToken, requireRole('admin'), async (req, res) => {
+  const adminId = req.user.id;
+  const { added_points, point_value } = req.body;
+
+  if (added_points == null && point_value == null) {
+    return res.status(400).json({ message: "At least one of 'added_points' or 'point_value' is required" });
+  }
+
+  try {
+    // Fetch current budget
+    const [rows] = await pool.query('SELECT total_points, remaining_points FROM admin_budget WHERE admin_id = ?', [adminId]);
+    if (rows.length === 0) {
+      return res.status(404).json({ message: "Admin budget not found. Please create one first." });
+    }
+
+    const current = rows[0];
+
+    // Compute new values
+    const newTotalPoints = added_points != null ? current.total_points + Number(added_points) : current.total_points;
+    const newRemainingPoints = added_points != null ? current.remaining_points + Number(added_points) : current.remaining_points;
+
+    // Update query parts
+    const updates = [];
+    const params = [];
+
+    updates.push('total_points = ?');
+    params.push(newTotalPoints);
+
+    updates.push('remaining_points = ?');
+    params.push(newRemainingPoints);
+
+    if (point_value != null) {
+      updates.push('point_value = ?');
+      params.push(Number(point_value));
+    }
+
+    params.push(adminId);
+
+    // Update budget
+    await pool.query(`UPDATE admin_budget SET ${updates.join(', ')} WHERE admin_id = ?`, params);
+
+    await logAudit(adminId, 'admin', 'Budget Updated', `Budget updated: added_points=${added_points || 0}, point_value=${point_value || 'unchanged'}`);
+
+    res.json({ message: "Admin budget updated successfully." });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
 
 
 module.exports = router;

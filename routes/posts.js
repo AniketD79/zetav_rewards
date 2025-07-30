@@ -50,60 +50,77 @@ router.post('/', verifyToken, upload.single('image'), async (req, res) => {
 //Get Feed (All Users)
 
 //Enhanced Feed With Like Count, Comment Count, Comments & Comment Likes
+
 router.get('/feed', verifyToken, async (req, res) => {
   try {
-    // Step 1: Get posts with like & comment count
-    const [posts] = await pool.query(`
+    const userId = req.user.id;
+
+    const limit = parseInt(req.query.limit) || 6;   // fetch 6 posts by default
+    const offset = parseInt(req.query.offset) || 0; // start at zero by default
+    
+ 
+    const [[{ totalCount }]] = await pool.query('SELECT COUNT(1) AS totalCount FROM posts');
+    
+
+    const sqlPosts = `
       SELECT 
-        p.*, 
-        g.name AS giver_name, 
+        p.*,
+        g.name AS giver_name,
         r.name AS receiver_name,
-        (SELECT COUNT(*) FROM likes WHERE post_id = p.id) AS like_count,
-        (SELECT COUNT(*) FROM comments WHERE post_id = p.id) AS comment_count
+        (SELECT COUNT(1) FROM likes WHERE post_id = p.id) AS like_count,
+        (SELECT COUNT(1) FROM comments WHERE post_id = p.id) AS comment_count,
+        EXISTS (SELECT 1 FROM likes WHERE post_id = p.id AND user_id = ?) AS user_liked
       FROM posts p
       JOIN users g ON p.giver_id = g.id
       JOIN users r ON p.receiver_id = r.id
       ORDER BY p.created_at DESC
-    `);
+      LIMIT ? OFFSET ?`;
+    
+    const [posts] = await pool.query(sqlPosts, [userId, limit, offset]);
+    
 
     const postIds = posts.map(post => post.id);
-
-    // Step 2: Get all comments for those posts
-    let comments = [];
+    let comments = {};
     if (postIds.length > 0) {
-      const [commentRows] = await pool.query(`
+      const sqlComments = `
         SELECT 
           c.*, 
           u.name AS commenter_name,
-          (SELECT COUNT(*) FROM comment_likes WHERE comment_id = c.id) AS like_count
+          (SELECT COUNT(1) FROM comment_likes WHERE comment_id = c.id) AS like_count
         FROM comments c
         JOIN users u ON c.user_id = u.id
         WHERE c.post_id IN (?)
-        ORDER BY c.created_at ASC
-      `, [postIds]);
-
-      // Group comments by post_id
+        ORDER BY c.created_at ASC`;
+      
+      const [commentRows] = await pool.query(sqlComments, [postIds]);
+      
+  
       comments = commentRows.reduce((acc, comment) => {
-        if (!acc[comment.post_id]) acc[comment.post_id] = [];
+        acc[comment.post_id] = acc[comment.post_id] || [];
         acc[comment.post_id].push(comment);
         return acc;
       }, {});
     }
 
-    // Step 3: Attach comments to matching posts
-    const finalFeed = posts.map(post => ({
+    
+    const feed = posts.map(post => ({
       ...post,
+      user_liked: Boolean(post.user_liked),
       comments: comments[post.id] || [],
     }));
-
-    res.json(finalFeed);
+    
+   
+    res.json({
+      totalCount,     
+      limit,         
+      offset,         
+      nextOffset: offset + limit < totalCount ? offset + limit : null,
+      data: feed,
+    });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
 });
-
-
-
 
 //Like / Unlike Post
 router.post('/:id/like', verifyToken, async (req, res) => {

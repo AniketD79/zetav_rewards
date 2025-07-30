@@ -38,9 +38,10 @@ router.get('/me', verifyToken, async (req, res) => {
   const userId = req.user.id;
 
   try {
-    // Select only needed columns, no *
-    const [[user]] = await pool.query(
-      `SELECT u.id, u.name, u.email, u.role, u.profile_picture, u.contact_info,u.employee_id,  u.date_of_joining,  
+    // Fetch base user info with department
+    const [userRows] = await pool.query(
+      `SELECT u.id, u.name, u.email, u.role, u.profile_picture,
+              u.contact_info, u.employee_id, u.date_of_joining,
               d.name AS department_name,
               u.manager_id
        FROM users u
@@ -49,39 +50,81 @@ router.get('/me', verifyToken, async (req, res) => {
       [userId]
     );
 
-    if (!user) return res.status(404).json({ message: 'User not found' });
+    if (userRows.length === 0) {
+      return res.status(404).json({ message: 'User not found' });
+    }
 
+    const user = userRows[0];
+
+    // Fetch manager info if employee
     if (user.role === 'employee' && user.manager_id) {
-      const [[manager]] = await pool.query(
-        'SELECT id, name, email, profile_picture FROM users WHERE id = ?',
+      const [mgrRows] = await pool.query(
+        `SELECT id, name, email, profile_picture FROM users WHERE id = ?`,
         [user.manager_id]
       );
-      user.manager = manager || null;
+      user.manager = mgrRows.length ? mgrRows[0] : null;
     } else {
       user.manager = null;
     }
 
+    // Points data depending on role
     if (user.role === 'employee') {
       const [[{ earned }]] = await pool.query(
-        'SELECT COALESCE(SUM(points), 0) AS earned FROM reward_points WHERE receiver_id = ?',
+        `SELECT COALESCE(SUM(points), 0) AS earned FROM reward_points WHERE receiver_id = ?`,
         [userId]
       );
       const [[{ redeemed }]] = await pool.query(
-        'SELECT COALESCE(SUM(required_points), 0) AS redeemed FROM redemptions WHERE user_id = ? AND status = "approved"',
+        `SELECT COALESCE(SUM(required_points), 0) AS redeemed FROM redemptions WHERE user_id = ? AND status = 'approved'`,
         [userId]
       );
-      user.points = {
-        earned_points: earned || 0,
-        redeemed_points: redeemed || 0,
-        available_points: (earned || 0) - (redeemed || 0),
+      user.employee_earned_points = earned || 0;
+      user.employee_redeemed_points = redeemed || 0;
+      user.employee_available_points = (earned || 0) - (redeemed || 0);
+    } 
+    else if (user.role === 'manager') {
+      const [[{ assigned }]] = await pool.query(
+        `SELECT COALESCE(SUM(points_assigned), 0) AS assigned FROM manager_points WHERE manager_id = ?`,
+        [userId]
+      );
+      const [[{ remaining }]] = await pool.query(
+        `SELECT COALESCE(SUM(remaining_points), 0) AS remaining FROM manager_points WHERE manager_id = ?`,
+        [userId]
+      );
+      user.manager_assigned_points = assigned || 0;
+      user.manager_remaining_points = remaining || 0;
+    }
+    else if (user.role === 'admin') {
+      // Fetch admin budget info
+      const [budgetRows] = await pool.query(
+        `SELECT total_points, remaining_points, point_value FROM admin_budget WHERE admin_id = ?`,
+        [userId]
+      );
+
+      // If no budget record found, default zeros
+      const budget = budgetRows.length > 0 ? budgetRows[0] : {
+        total_points: 0,
+        remaining_points: 0,
+        point_value: 0
       };
+
+      // Calculate assigned points by summing all assigned manager points
+      const [[{ assigned_points }]] = await pool.query(
+        `SELECT COALESCE(SUM(points_assigned), 0) AS assigned_points FROM manager_points`
+      );
+
+      user.admin_total_points = budget.total_points || 0;
+      user.admin_remaining_points = budget.remaining_points || 0;
+      user.admin_point_value = budget.point_value || 0;
+      user.admin_assigned_points = assigned_points || 0;
     }
 
-    res.json(user);
+    return res.json(user);
   } catch (err) {
-    res.status(500).json({ message: err.message });
+    console.error(err);
+    return res.status(500).json({ message: err.message });
   }
 });
+
 
 // Get current points
 router.get('/points', verifyToken, requireRole('employee'), async (req, res) => {

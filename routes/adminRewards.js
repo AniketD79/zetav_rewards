@@ -61,7 +61,7 @@ router.post('/rewardreasons',verifyToken,requireRole('admin'),
 );
 
 // GET all reward reasons
-router.get('/rewardreasons', verifyToken, requireRole('admin'), async (req, res) => {
+router.get('/rewardreasons', verifyToken, requireRole('admin','manager'), async (req, res) => {
   try {
     const [reasons] = await pool.query(
       'SELECT id, reason, description, img FROM rewardreason ORDER BY created_at DESC'
