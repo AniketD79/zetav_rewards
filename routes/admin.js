@@ -22,6 +22,32 @@ router.put('/users/:id/approve', verifyToken, requireRole('admin'), async (req, 
   }
 });
 
+
+router.get('/users', verifyToken, requireRole('admin'), async (req, res) => {
+  try {
+    const [users] = await pool.query(
+      `SELECT id, name, email, role, manager_id, approved, profile_picture, contact_info, created_at, department_id, date_of_joining, employee_id 
+       FROM users`
+    );
+    res.json(users);
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+router.get('/users/pending', verifyToken, requireRole('admin'), async (req, res) => {
+  try {
+    const [users] = await pool.query(
+      `SELECT id, name, email, role, manager_id, approved, profile_picture, contact_info, created_at, department_id, date_of_joining, employee_id 
+       FROM users WHERE approved = 0`
+    );
+    res.json(users);
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+
 //Update User Role or Manager
 router.put('/users/:id/update-role', verifyToken, requireRole('admin'), async (req, res) => {
   const { id } = req.params;
@@ -59,6 +85,7 @@ router.put('/users/:id/update-role', verifyToken, requireRole('admin'), async (r
 });
 
 
+
 //Delete a User
 router.delete('/users/:id', verifyToken, requireRole('admin'), async (req, res) => {
   const { id } = req.params;
@@ -72,7 +99,6 @@ router.delete('/users/:id', verifyToken, requireRole('admin'), async (req, res) 
 });
 
 //Assign Points to Manager
-
 router.post('/assign-points', verifyToken, requireRole('admin'), async (req, res) => {
   const admin_id = req.user.id;
   const { manager_id, points } = req.body;
@@ -82,7 +108,11 @@ router.post('/assign-points', verifyToken, requireRole('admin'), async (req, res
   }
 
   try {
-    const [budgetRows] = await pool.query('SELECT remaining_points FROM admin_budget WHERE admin_id = ?', [admin_id]);
+    // Check admin budget
+    const [budgetRows] = await pool.query(
+      'SELECT remaining_points FROM admin_budget WHERE admin_id = ?',
+      [admin_id]
+    );
 
     if (budgetRows.length === 0) {
       return res.status(400).json({ message: 'Admin budget not set. Please add budget first.' });
@@ -90,21 +120,103 @@ router.post('/assign-points', verifyToken, requireRole('admin'), async (req, res
 
     const remaining_points = budgetRows[0].remaining_points;
 
+    // Check if manager already has points assigned
+    const [existingPoints] = await pool.query(
+      'SELECT id FROM manager_points WHERE manager_id = ?',
+      [manager_id]
+    );
+
+    if (existingPoints.length > 0) {
+      return res.status(400).json({ message: 'Points already assigned to this manager. Please update instead.' });
+    }
+
     if (points > remaining_points) {
       return res.status(400).json({ message: `Insufficient points in budget. Remaining points: ${remaining_points}` });
     }
 
-    // Assign points to manager (existing table)
-    await pool.query('INSERT INTO manager_points (manager_id, points_assigned, remaining_points) VALUES (?, ?, ?)', [manager_id, points, points]);
+    // Insert new points assignment
+    await pool.query(
+      'INSERT INTO manager_points (manager_id, points_assigned, remaining_points) VALUES (?, ?, ?)',
+      [manager_id, points, points]
+    );
 
-    // Deduct assigned points from admin remaining_points
-    await pool.query('UPDATE admin_budget SET remaining_points = remaining_points - ? WHERE admin_id = ?', [points, admin_id]);
+    // Deduct from admin budget
+    await pool.query(
+      'UPDATE admin_budget SET remaining_points = remaining_points - ? WHERE admin_id = ?',
+      [points, admin_id]
+    );
 
     await logAudit(admin_id, 'admin', 'Points Assigned', `Assigned ${points} points to manager ${manager_id}`);
 
     return res.json({ message: 'Points assigned to manager successfully.' });
 
   } catch (err) {
+    return res.status(500).json({ message: err.message });
+  }
+});
+
+router.put('/assign-points', verifyToken, requireRole('admin'), async (req, res) => {
+  const admin_id = req.user.id;
+  const { manager_id, points } = req.body;
+
+  if (!manager_id || !points || points <= 0) {
+    return res.status(400).json({ message: 'manager_id and positive points are required.' });
+  }
+
+  try {
+    // Fetch admin budget
+    const [budgetRows] = await pool.query(
+      'SELECT remaining_points FROM admin_budget WHERE admin_id = ?',
+      [admin_id]
+    );
+    if (budgetRows.length === 0) {
+      return res.status(400).json({ message: 'Admin budget not set. Please add budget first.' });
+    }
+    const remaining_points = Number(budgetRows[0].remaining_points);
+    if (points > remaining_points) {
+      return res.status(400).json({ message: `Insufficient admin budget. Remaining points: ${remaining_points}` });
+    }
+
+    // Fetch current manager points
+    const [existingManagerPoints] = await pool.query(
+      'SELECT id, points_assigned, remaining_points FROM manager_points WHERE manager_id = ?',
+      [manager_id]
+    );
+    if (existingManagerPoints.length === 0) {
+      return res.status(404).json({ message: 'Manager has no assigned points yet. Use POST to assign first.' });
+    }
+    const record = existingManagerPoints[0];
+
+    // Explicitly convert DB values to numbers before addition
+    const currentPointsAssigned = Number(record.points_assigned) || 0;
+    const currentPointsRemaining = Number(record.remaining_points) || 0;
+    const pointsToAdd = Number(points);
+
+    const updatedPointsAssigned = currentPointsAssigned + pointsToAdd;
+    const updatedPointsRemaining = currentPointsRemaining + pointsToAdd;
+
+    // Update manager points with numeric sums
+    await pool.query(
+      'UPDATE manager_points SET points_assigned = ?, remaining_points = ? WHERE id = ?',
+      [updatedPointsAssigned, updatedPointsRemaining, record.id]
+    );
+
+    // Deduct these points from admin budget (remaining_points decrease)
+    await pool.query(
+      'UPDATE admin_budget SET remaining_points = remaining_points - ? WHERE admin_id = ?',
+      [pointsToAdd, admin_id]
+    );
+
+    await logAudit(
+      admin_id,
+      'admin',
+      'Points Incremented',
+      `Added ${pointsToAdd} points to manager ${manager_id}. New assigned: ${updatedPointsAssigned}`
+    );
+
+    return res.json({ message: `Added ${pointsToAdd} points to manager successfully.` });
+  } catch (err) {
+    console.error('Error updating points:', err);
     return res.status(500).json({ message: err.message });
   }
 });

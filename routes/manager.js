@@ -86,7 +86,7 @@ router.get('/employees/:id', verifyToken, requireRole('manager'), async (req, re
 });
 
 // Reward Assigned Employee with Auto Post
-router.post('/rewardpoint', verifyToken, requireRole('manager'), async (req, res) => {
+router.post('/rewardpoint', verifyToken, requireRole('admin','manager'), async (req, res) => {
   const { receiver_id, points, reason, reason_id, caption } = req.body; 
 
   try {
@@ -176,8 +176,6 @@ router.get('/points', verifyToken, requireRole('manager'), async (req, res) => {
     res.status(500).json({ message: err.message });
   }
 });
-
-
 
 
 
