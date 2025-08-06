@@ -9,17 +9,16 @@ router.get('/managers', verifyToken, requireRole('admin'), async (req, res) => {
   try {
     const [managers] = await pool.query(
       `SELECT 
-   u.id,
-   u.name,
-   u.profile_picture,
-   d.name AS department_name,
-   COALESCE(SUM(mp.points_assigned), 0) AS total_points
+  u.id,
+  u.name,
+  u.profile_picture,
+  d.name AS department_name,
+  IFNULL(mp.points_assigned, 0) AS total_points
 FROM users u
 LEFT JOIN departments d ON u.department_id = d.id
 LEFT JOIN manager_points mp ON mp.manager_id = u.id
 WHERE u.role = 'manager'
-GROUP BY u.id, d.name
-ORDER BY u.name ASC
+ORDER BY u.name ASC;
 `
     );
     res.json(managers);

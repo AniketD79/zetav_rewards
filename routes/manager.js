@@ -85,22 +85,47 @@ router.get('/employees/:id', verifyToken, requireRole('manager'), async (req, re
   }
 });
 
-// Reward Assigned Employee with Auto Post
-router.post('/rewardpoint', verifyToken, requireRole('admin','manager'), async (req, res) => {
-  const { receiver_id, points, reason, reason_id, caption } = req.body; 
+
+
+// Reward Points to Employee
+
+router.post('/rewardpoint', verifyToken, requireRole('admin', 'manager'), async (req, res) => {
+  const { receiver_id, points, reason, reason_id, caption } = req.body;
 
   try {
-    const isAssigned = await isMyEmployee(req.user.id, receiver_id);
-    if (!isAssigned) return res.status(403).json({ message: 'Not your assigned employee' });
+    // Assigned employee check managers
+    if (req.user.role === 'manager') {
+      const isAssigned = await isMyEmployee(req.user.id, receiver_id);
+      if (!isAssigned) {
+        return res.status(403).json({ message: 'Not your assigned employee' });
+      }
+    }
 
-    const [[{ remaining }]] = await pool.query(
-      'SELECT COALESCE(SUM(remaining_points), 0) AS remaining FROM manager_points WHERE manager_id = ?',
-      [req.user.id]
-    );
-    if (!remaining || points > remaining)
+
+    let remaining = 0;
+    if (req.user.role === 'manager') {
+      const [[managerRow]] = await pool.query(
+        'SELECT COALESCE(SUM(remaining_points), 0) AS remaining FROM manager_points WHERE manager_id = ?',
+        [req.user.id]
+      );
+      remaining = managerRow.remaining;
+    } else if (req.user.role === 'admin') {
+      const [[adminRow]] = await pool.query(
+        'SELECT COALESCE(remaining_points, 0) AS remaining FROM admin_budget WHERE admin_id = ?',
+        [req.user.id]
+      );
+      remaining = adminRow ? adminRow.remaining : 0;
+    }
+
+    //console.log(`Remaining points for ${req.user.role} ID ${req.user.id}:`, remaining);
+
+    if (!remaining || points > remaining) {
       return res.status(400).json({ message: 'Not enough points' });
+    }
 
+    // Reward reason lookup
     let reasonImage = null;
+    let rewardReasonText = reason;
     if (reason_id) {
       const [[reasonRow]] = await pool.query(
         'SELECT img, reason FROM rewardreason WHERE id = ?',
@@ -110,41 +135,51 @@ router.post('/rewardpoint', verifyToken, requireRole('admin','manager'), async (
         return res.status(400).json({ message: 'Invalid reason_id provided' });
       }
       reasonImage = reasonRow.img;
-
       if (!reason) {
-        req.body.reason = reasonRow.reason;
+        rewardReasonText = reasonRow.reason;
       }
     }
 
+    // Insert reward_points record
     await pool.query(
       'INSERT INTO reward_points (giver_id, receiver_id, points, reason, reason_id) VALUES (?, ?, ?, ?, ?)',
-      [req.user.id, receiver_id, points, reason || '', reason_id || null]
+      [req.user.id, receiver_id, points, rewardReasonText || '', reason_id || null]
     );
 
-    await pool.query(
-      'UPDATE manager_points SET remaining_points = remaining_points - ? WHERE manager_id = ? LIMIT 1',
-      [points, req.user.id]
-    );
+    // Deduct points from appropriate table
+    if (req.user.role === 'manager') {
+      await pool.query(
+        'UPDATE manager_points SET remaining_points = remaining_points - ? WHERE manager_id = ? LIMIT 1',
+        [points, req.user.id]
+      );
+    } else if (req.user.role === 'admin') {
+      await pool.query(
+        'UPDATE admin_budget SET remaining_points = remaining_points - ? WHERE admin_id = ?',
+        [points, req.user.id]
+      );
+    }
 
-    // Use only the image associated with the reason_id, no fallback!
+    // Compose post image URL if file exists
     let imageUrl = null;
     if (reasonImage) {
-      const imagePath = path.join(__dirname, '..', 'post_images', reasonImage);
-      if (fs.existsSync(imagePath)) {
-        imageUrl = `/post_images/${reasonImage}`;
-      } else {
-        // If image file is missing, do NOT assign any image URL
-        imageUrl = null;
+      const imageFileName = reasonImage.replace(/^\/post_images\//, '');
+      const imageDiskPath = path.join(__dirname, '..', 'post_images', imageFileName);
+      if (fs.existsSync(imageDiskPath)) {
+        imageUrl = `/post_images/${imageFileName}`;
       }
     }
 
-    // Insert the post with imageUrl that is either the reasonImage (if file exists) or null — no random
+    // Insert post record
     await pool.query(
       'INSERT INTO posts (giver_id, receiver_id, points, reason, image_url, caption) VALUES (?, ?, ?, ?, ?, ?)',
-      [req.user.id, receiver_id, points, reason || '', imageUrl, caption || null]
+      [req.user.id, receiver_id, points, rewardReasonText || '', imageUrl, caption || null]
     );
 
-    await logAudit(req.user.id, 'manager', 'Reward Given with Post',
+    // Log audit entry
+    await logAudit(
+      req.user.id,
+      req.user.role,
+      'Reward Given with Post',
       `Rewarded ${points} pts to employee ${receiver_id} with reason id ${reason_id || 'N/A'}${caption ? ` and caption: ${caption}` : ''}`
     );
 
@@ -153,6 +188,11 @@ router.post('/rewardpoint', verifyToken, requireRole('admin','manager'), async (
     res.status(500).json({ message: err.message });
   }
 });
+
+module.exports = router;
+
+
+
 
 
 // View Manager Points 

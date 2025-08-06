@@ -257,20 +257,21 @@ router.get('/manager', verifyToken, requireRole('employee'), async (req, res) =>
 // Accepts multipart/form-data with optional file 'profile_picture'
 router.put('/profile', verifyToken, requireRole('employee'), upload.single('profile_picture'), async (req, res) => {
   const { name, contact_info } = req.body;
-  let profile_picture;
+  let profile_picture_path = null;
 
   if (req.file) {
-    profile_picture = req.file.filename; // or use req.file.path if storing full path
+   
+    profile_picture_path = `/uploads/${req.file.filename}`;
   }
 
   try {
-    // Build dynamic query to update fields conditionally
+   
     let query = 'UPDATE users SET name = ?, contact_info = ?';
     const params = [name, contact_info];
 
-    if (profile_picture) {
+    if (profile_picture_path) {
       query += ', profile_picture = ?';
-      params.push(profile_picture);
+      params.push(profile_picture_path);
     }
 
     query += ' WHERE id = ?';
@@ -280,11 +281,12 @@ router.put('/profile', verifyToken, requireRole('employee'), upload.single('prof
 
     await logAudit(req.user.id, 'employee', 'Updated Profile', name);
 
-    res.json({ message: 'Profile updated.', profile_picture: profile_picture || null });
+    res.json({ message: 'Profile updated.', profile_picture: profile_picture_path || null });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
 });
+
 
 // Change password
 router.put('/password', verifyToken, requireRole('employee'), async (req, res) => {

@@ -32,33 +32,22 @@ const reasonUpload = multer({
 // Reward Reason CRUD
 
 // POST create reward reason with file upload
-router.post('/rewardreasons',verifyToken,requireRole('admin'),
-  reasonUpload.single('img'),
-  async (req, res) => {
-    const { reason, description } = req.body;
-
-    if (!reason) {
-      return res.status(400).json({ message: 'Reason is required' });
-    }
-    let imageFilename = null;
-    if (req.file) {
-      imageFilename = req.file.filename;
-    }
-
-    try {
-      const [result] = await pool.query(
-        'INSERT INTO rewardreason (reason, description, img) VALUES (?, ?, ?)',
-        [reason, description || '', imageFilename]
-      );
-
-      await logAudit(req.user.id, 'admin', 'Reward Reason Created', `Reason ID ${result.insertId}: ${reason}`);
-
-      res.status(201).json({ message: 'Reward reason created successfully.' });
-    } catch (err) {
-      res.status(500).json({ message: err.message });
-    }
+router.post('/rewardreasons', verifyToken, requireRole('admin'), reasonUpload.single('img'), async (req, res) => {
+  const { reason, description } = req.body;
+  let imagePath = null;
+  if (req.file) {
+    
+    imagePath = `/post_images/${req.file.filename}`;
   }
-);
+
+  await pool.query(
+    'INSERT INTO rewardreason (reason, description, img) VALUES (?, ?, ?)',
+    [reason, description || '', imagePath]
+  );
+
+  res.status(201).json({ message: 'Reward reason created successfully.' });
+});
+
 
 // GET all reward reasons
 router.get('/rewardreasons', verifyToken, requireRole('admin','manager'), async (req, res) => {
@@ -171,33 +160,29 @@ const categoryUpload = multer({
 });
 
 // POST create reward category with file upload
-router.post('/rewardcategories', verifyToken, requireRole('admin'),
-  categoryUpload.single('img'),
-  async (req, res) => {
-    const { category_name, description } = req.body;
-    if (!category_name) {
-      return res.status(400).json({ message: 'Category name is required' });
-    }
 
-    let imageFilename = null;
-    if (req.file) {
-      imageFilename = req.file.filename;
-    }
-
-    try {
-      const [result] = await pool.query(
-        'INSERT INTO rewardcategory (category_name, description, img) VALUES (?, ?, ?)',
-        [category_name, description || '', imageFilename]
-      );
-
-      await logAudit(req.user.id, 'admin', 'Reward Category Created', `Category ID ${result.insertId}: ${category_name}`);
-
-      res.status(201).json({ message: 'Reward category created successfully.' });
-    } catch (err) {
-      res.status(500).json({ message: err.message });
-    }
+router.post('/rewardcategories', verifyToken, requireRole('admin'), categoryUpload.single('img'), async (req, res) => {
+  const { category_name, description } = req.body;
+  if (!category_name) {
+    return res.status(400).json({ message: 'Category name is required' });
   }
-);
+
+  let imagePath = null;
+  if (req.file) {
+   
+    imagePath = `/reward_category/${req.file.filename}`;
+  }
+
+  const [result] = await pool.query(
+    'INSERT INTO rewardcategory (category_name, description, img) VALUES (?, ?, ?)',
+    [category_name, description || '', imagePath]
+  );
+
+  await logAudit(req.user.id, 'admin', 'Reward Category Created', `Category ID ${result.insertId}: ${category_name}`);
+
+  res.status(201).json({ message: 'Reward category created successfully.' });
+});
+
 
 // GET all reward categories
 router.get('/rewardcategories', verifyToken, requireRole('admin'), async (req, res) => {

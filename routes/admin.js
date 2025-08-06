@@ -22,7 +22,6 @@ router.put('/users/:id/approve', verifyToken, requireRole('admin'), async (req, 
   }
 });
 
-
 router.get('/users', verifyToken, requireRole('admin'), async (req, res) => {
   try {
     const [users] = await pool.query(
@@ -83,7 +82,6 @@ router.put('/users/:id/update-role', verifyToken, requireRole('admin'), async (r
     res.status(500).json({ message: err.message });
   }
 });
-
 
 
 //Delete a User
@@ -220,6 +218,9 @@ router.put('/assign-points', verifyToken, requireRole('admin'), async (req, res)
     return res.status(500).json({ message: err.message });
   }
 });
+
+
+
 
 
 router.get('/all/redemptions', verifyToken, requireRole('admin'), async (req, res) => {
