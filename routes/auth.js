@@ -167,4 +167,14 @@ router.post('/logout', async (req, res) => {
   }
 });
 
+router.post('/fcmtoken', verifyToken, async (req, res) => {
+  const { token } = req.body;
+  if (!token || typeof token !== 'string') {
+    return res.status(400).json({ message: 'Valid FCM token required' });
+  }
+  await pool.query('UPDATE users SET fcm_token = ? WHERE id = ?', [token, req.user.id]);
+  res.json({ message: 'FCM token saved' });
+});
+
+
 module.exports = router;

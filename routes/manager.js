@@ -4,7 +4,7 @@ const { verifyToken, requireRole } = require('../middleware/auth');
 const logAudit = require('../utils/logger');
 const fs = require('fs');
 const path = require('path');
-
+const sendPushNotification = require('../sendPushNotification');
 const router = express.Router();
 
 //  Helper: Check if employee belongs to the requesting manager
@@ -175,6 +175,29 @@ router.post('/rewardpoint', verifyToken, requireRole('admin', 'manager'), async 
       [req.user.id, receiver_id, points, rewardReasonText || '', imageUrl, caption || null]
     );
 
+    // Send push notification if receiver has a token
+    
+// Fetch giver and receiver names
+const [[giver]] = await pool.query('SELECT name FROM users WHERE id = ?', [req.user.id]);
+const [[receiver]] = await pool.query('SELECT name FROM users WHERE id = ?', [receiver_id]);
+
+// Compose notification title and body with names
+const notificationTitle = 'New Reward Posted!';
+const notificationBody = `${giver.name} rewarded ${receiver.name} with ${points} points.`;
+
+// Get all users having a valid fcm_token
+const [rows] = await pool.query(
+  "SELECT fcm_token FROM users WHERE fcm_token IS NOT NULL AND fcm_token != ''"
+);
+
+// Send push notification to all users
+for (const row of rows) {
+  await sendPushNotification(row.fcm_token, {
+    title: notificationTitle,
+    body: notificationBody
+  });
+}
+
     // Log audit entry
     await logAudit(
       req.user.id,
@@ -184,13 +207,11 @@ router.post('/rewardpoint', verifyToken, requireRole('admin', 'manager'), async 
     );
 
     res.json({ message: 'Rewarded successfully and post created.' });
+
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
 });
-
-module.exports = router;
-
 
 
 
