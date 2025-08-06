@@ -8,7 +8,7 @@ const router = express.Router();
 
 const ACCESS_TOKEN_EXPIRY = '15d'; // short-lived token
 const REFRESH_TOKEN_EXPIRY = '30d'; // long-lived token
-
+const { verifyToken } = require('../middleware/auth');
 // Generate access token
 function generateAccessToken(user) {
   return jwt.sign(
