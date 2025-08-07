@@ -3,12 +3,13 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const pool = require('../config/db');
 const logAudit = require('../utils/logger');
-
+const { createNotification } = require('../utils/notifications');
+const sendPushNotification = require('../sendPushNotification');
 const router = express.Router();
-
+const { verifyToken } = require('../middleware/auth');
 const ACCESS_TOKEN_EXPIRY = '15d'; // short-lived token
 const REFRESH_TOKEN_EXPIRY = '30d'; // long-lived token
-const { verifyToken } = require('../middleware/auth');
+
 // Generate access token
 function generateAccessToken(user) {
   return jwt.sign(
@@ -63,6 +64,28 @@ router.post('/signup', async (req, res) => {
     ]);
 
     res.status(201).json({ message: 'Signup successful. Await admin approval.' });
+
+    // After user is inserted to DB:
+const [[newUser]] = await pool.query('SELECT id, name FROM users WHERE email = ?', [email]);
+
+// Fetch all admins who should be notified
+const [admins] = await pool.query('SELECT id, fcm_token FROM users WHERE role = ? AND approved = 1 AND fcm_token IS NOT NULL AND fcm_token != ""', ['admin']);
+
+const message = `New signup: ${name}. Awaiting approval.`;
+
+for (const admin of admins) {
+  // Insert notification record
+  await createNotification({
+    sender_id: newUser.id,
+    recipient_id: admin.id,
+    message,
+    type: 'signup'
+  });
+
+  // Send push notification if token exists
+  await sendPushNotification(admin.fcm_token, { title: 'New User Signup', body: message });
+}
+
   } catch (err) {
     res.status(500).json({ message: 'Signup failed', error: err.message });
   }
@@ -159,13 +182,20 @@ router.post('/logout', async (req, res) => {
       [refreshToken]
     );
 
-    await logAudit(decoded.id, null, 'Logout', 'User logged out');
+    // Remove FCM token for user to prevent push notifications
+    await pool.query(
+      `UPDATE users SET fcm_token = NULL WHERE id = ?`,
+      [decoded.id]
+    );
 
-    res.json({ message: 'Logged out successfully' });
+    await logAudit(decoded.id, null, 'Logout', 'User logged out and FCM token cleared');
+
+    res.json({ message: 'Logged out successfully and notifications disabled.' });
   } catch (err) {
     res.status(400).json({ message: 'Invalid refresh token' });
   }
 });
+
 
 router.post('/fcmtoken', verifyToken, async (req, res) => {
   const { token } = req.body;

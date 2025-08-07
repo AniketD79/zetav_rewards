@@ -7,7 +7,8 @@ const { verifyToken, requireRole } = require('../middleware/auth');
 const logAudit = require('../utils/logger');
 
 const router = express.Router();
-
+const { createNotification } = require('../utils/notifications');
+const sendPushNotification = require('../sendPushNotification');
 // Setup multer storage for profile picture uploads
 const storage = multer.diskStorage({
   destination: function (req, file, cb) {
@@ -33,97 +34,6 @@ const upload = multer({
   },
 });
 
-// Get Logged-in User Info
-// router.get('/me', verifyToken, async (req, res) => {
-//   const userId = req.user.id;
-
-//   try {
-//     // Fetch base user info with department
-//     const [userRows] = await pool.query(
-//       `SELECT u.id, u.name, u.email, u.role, u.profile_picture,
-//               u.contact_info, u.employee_id, u.date_of_joining,
-//               d.name AS department_name,
-//               u.manager_id
-//        FROM users u
-//        LEFT JOIN departments d ON u.department_id = d.id
-//        WHERE u.id = ?`,
-//       [userId]
-//     );
-
-//     if (userRows.length === 0) {
-//       return res.status(404).json({ message: 'User not found' });
-//     }
-
-//     const user = userRows[0];
-
-//     // Fetch manager info if employee
-//     if (user.role === 'employee' && user.manager_id) {
-//       const [mgrRows] = await pool.query(
-//         `SELECT id, name, email, profile_picture FROM users WHERE id = ?`,
-//         [user.manager_id]
-//       );
-//       user.manager = mgrRows.length ? mgrRows[0] : null;
-//     } else {
-//       user.manager = null;
-//     }
-
-//     // Points data depending on role
-//     if (user.role === 'employee') {
-//       const [[{ earned }]] = await pool.query(
-//         `SELECT COALESCE(SUM(points), 0) AS earned FROM reward_points WHERE receiver_id = ?`,
-//         [userId]
-//       );
-//       const [[{ redeemed }]] = await pool.query(
-//         `SELECT COALESCE(SUM(required_points), 0) AS redeemed FROM redemptions WHERE user_id = ? AND status = 'approved'`,
-//         [userId]
-//       );
-//       user.employee_earned_points = earned || 0;
-//       user.employee_redeemed_points = redeemed || 0;
-//       user.employee_available_points = (earned || 0) - (redeemed || 0);
-//     } 
-//     else if (user.role === 'manager') {
-//       const [[{ assigned }]] = await pool.query(
-//         `SELECT COALESCE(SUM(points_assigned), 0) AS assigned FROM manager_points WHERE manager_id = ?`,
-//         [userId]
-//       );
-//       const [[{ remaining }]] = await pool.query(
-//         `SELECT COALESCE(SUM(remaining_points), 0) AS remaining FROM manager_points WHERE manager_id = ?`,
-//         [userId]
-//       );
-//       user.manager_assigned_points = assigned || 0;
-//       user.manager_remaining_points = remaining || 0;
-//     }
-//     else if (user.role === 'admin') {
-//       // Fetch admin budget info
-//       const [budgetRows] = await pool.query(
-//         `SELECT total_points, remaining_points, point_value FROM admin_budget WHERE admin_id = ?`,
-//         [userId]
-//       );
-
-//       // If no budget record found, default zeros
-//       const budget = budgetRows.length > 0 ? budgetRows[0] : {
-//         total_points: 0,
-//         remaining_points: 0,
-//         point_value: 0
-//       };
-
-//       // Calculate assigned points by summing all assigned manager points
-//       const [[{ assigned_points }]] = await pool.query(
-//         `SELECT COALESCE(SUM(points_assigned), 0) AS assigned_points FROM manager_points`
-//       );
-
-//       user.admin_total_points = budget.total_points || 0;
-//       user.admin_remaining_points = budget.remaining_points || 0;
-//       user.admin_point_value = budget.point_value || 0;
-//       user.admin_assigned_points = assigned_points || 0;
-//     }
-
-//     return res.json(user);
-//   } catch (err) {
-//     console.error(err);
-//     return res.status(500).json({ message: err.message });
-//   }
-// });
 
 router.get('/me', verifyToken, async (req, res) => {
   const userId = req.user.id;
@@ -253,9 +163,8 @@ router.get('/manager', verifyToken, requireRole('employee'), async (req, res) =>
   }
 });
 
-// Update profile (name, picture, contact info)
-// Accepts multipart/form-data with optional file 'profile_picture'
-router.put('/profile', verifyToken, requireRole('employee'), upload.single('profile_picture'), async (req, res) => {
+
+router.put('/profile', verifyToken, upload.single('profile_picture'), async (req, res) => {
   const { name, contact_info } = req.body;
   let profile_picture_path = null;
 
@@ -337,28 +246,30 @@ router.post('/redemptions', verifyToken, requireRole('employee'), async (req, re
     await logAudit(req.user.id, 'employee', 'Redemption Requested', `Requested ${reward.title} worth ${reward.points_required} points`);
 
     res.json({ message: 'Redemption request submitted and pending approval.' });
+
+    // Fetch user info
+const [[employee]] = await pool.query('SELECT name, fcm_token FROM users WHERE id = ?', [req.user.id]);
+// Fetch admins
+const [admins] = await pool.query('SELECT id, fcm_token FROM users WHERE role = ? AND approved = 1 AND fcm_token IS NOT NULL AND fcm_token != ""', ['admin']);
+
+const message = `${employee.name} requested redemption for "${reward.title}" (${reward.points_required} points).`;
+
+for (const admin of admins) {
+  await createNotification({
+    sender_id: employee.id,
+    recipient_id: admin.id,
+    message,
+    type: 'redemption'
+  });
+
+  await sendPushNotification(admin.fcm_token, { title: 'New Redemption Request', body: message });
+}
+
   } catch (error) {
     res.status(500).json({ message: error.message });
   }
 });
 
-// Request notification (to manager/admin)
-router.post('/notifications/request', verifyToken, requireRole('employee'), async (req, res) => {
-  const { message } = req.body;
-  try {
-    const [[emp]] = await pool.query('SELECT manager_id FROM users WHERE id = ?', [req.user.id]);
-    if (!emp.manager_id) return res.status(400).json({ message: 'No manager assigned.' });
 
-    await pool.query(
-      'INSERT INTO notifications (sender_id, recipient_id, message, type) VALUES (?, ?, ?, ?)',
-      [req.user.id, emp.manager_id, message, 'employee_request']
-    );
-
-    await logAudit(req.user.id, 'employee', 'Notification Sent', message);
-    res.json({ message: 'Notification sent to manager.' });
-  } catch (err) {
-    res.status(500).json({ message: err.message });
-  }
-});
 
 module.exports = router;

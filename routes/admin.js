@@ -2,10 +2,36 @@ const express = require('express');
 const pool = require('../config/db');
 const { verifyToken, requireRole } = require('../middleware/auth');
 const logAudit = require('../utils/logger');
-
+const multer = require('multer');
+const path = require('path');
 const router = express.Router();
+const { createNotification } = require('../utils/notifications');
+const sendPushNotification = require('../sendPushNotification');
 
 //Get All Users (filter by role)
+const storage = multer.diskStorage({
+  destination: function (req, file, cb) {
+    cb(null, 'uploads/'); // Make sure this folder exists or handle creation
+  },
+  filename: function (req, file, cb) {
+    // Save file with userId + timestamp + original extension
+    const ext = path.extname(file.originalname);
+    cb(null, req.user.id + '-' + Date.now() + ext);
+  },
+});
+const upload = multer({
+  storage,
+  limits: { fileSize: 2 * 1024 * 1024 }, // limit 2MB
+  fileFilter: (req, file, cb) => {
+    const allowedTypes = /jpeg|jpg|png|gif/;
+    const extname = allowedTypes.test(path.extname(file.originalname).toLowerCase());
+    const mimetype = allowedTypes.test(file.mimetype);
+    if (extname && mimetype) {
+      return cb(null, true);
+    }
+    cb(new Error('Only images are allowed (jpeg, jpg, png, gif)'));
+  },
+});
 
 //Approve User
 router.put('/users/:id/approve', verifyToken, requireRole('admin'), async (req, res) => {
@@ -17,6 +43,8 @@ router.put('/users/:id/approve', verifyToken, requireRole('admin'), async (req, 
 
     await logAudit(req.user.id, 'admin', 'User Approval Toggled', `User ${id} -> approved: ${approved}`);
     res.json({ message: `User ${approved ? 'approved' : 'unapproved'} successfully.` });
+
+
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
@@ -71,10 +99,10 @@ router.put('/users/:id/update-role', verifyToken, requireRole('admin'), async (r
       'admin',
       'User Role Updated',
       `User ${id} set as ${role}` +
-        (manager_id ? ` under manager ${manager_id}` : '') +
-        (department_id ? ` assigned to department ${department_id}` : '') +
-        (date_of_joining ? ` with date of joining ${date_of_joining}` : '') +
-        (employee_id ? ` and employee ID ${employee_id}` : '')
+      (manager_id ? ` under manager ${manager_id}` : '') +
+      (department_id ? ` assigned to department ${department_id}` : '') +
+      (date_of_joining ? ` with date of joining ${date_of_joining}` : '') +
+      (employee_id ? ` and employee ID ${employee_id}` : '')
     );
 
     res.json({ message: 'User role, manager, department, date_of_joining, and employee ID updated.' });
@@ -252,7 +280,7 @@ router.put('/redemptions/:id/status', verifyToken, requireRole('admin'), async (
   if (!['approved', 'declined'].includes(status)) {
     return res.status(400).json({ message: "Status must be 'approved' or 'declined'." });
   }
-  
+
   if (status === 'declined' && (!decline_reason || decline_reason.trim() === '')) {
     return res.status(400).json({ message: 'Decline reason is required' });
   }
@@ -263,7 +291,7 @@ router.put('/redemptions/:id/status', verifyToken, requireRole('admin'), async (
       [status, status === 'declined' ? decline_reason : null, id]
     );
 
-    await logAudit(req.user.id, 'admin', `Redemption ${status}`, `Redemption ID ${id} ${status}${decline_reason ? ': '+decline_reason : ''}`);
+    await logAudit(req.user.id, 'admin', `Redemption ${status}`, `Redemption ID ${id} ${status}${decline_reason ? ': ' + decline_reason : ''}`);
 
     res.json({ message: `Redemption ${status} successfully.` });
   } catch (err) {
@@ -441,6 +469,139 @@ router.put('/budget', verifyToken, requireRole('admin'), async (req, res) => {
     res.json({ message: "Admin budget updated successfully." });
   } catch (error) {
     res.status(500).json({ message: error.message });
+  }
+});
+
+
+
+router.post('/announcements', verifyToken, requireRole('admin'), upload.single('announcement_Image'), async (req, res) => {
+
+  const { message, target_group, recipient_id } = req.body;
+  const sender_id = req.user.id;
+
+  if (!message) {
+    return res.status(400).json({ message: 'Message is required.' });
+  }
+
+  if (!recipient_id && !target_group) {
+    return res.status(400).json({ message: 'Either recipient_id or target_group must be provided.' });
+  }
+
+  try {
+    let image_url = null;
+    if (req.file) {
+      image_url = `/uploads/${req.file.filename}`;
+    }
+
+    if (recipient_id) {
+      // Personal announcement
+      await pool.query(
+        `INSERT INTO notifications (sender_id, recipient_id, target_group, message, type, image_url, is_read)
+         VALUES (?, ?, NULL, ?, 'announcement', ?, false)`,
+        [sender_id, recipient_id, message, image_url]
+      );
+
+      const [[user]] = await pool.query(
+        `SELECT fcm_token FROM users WHERE id = ? AND fcm_token IS NOT NULL AND fcm_token != ''`,
+        [recipient_id]
+      );
+
+      if (user && user.fcm_token) {
+        const notificationPayload = {
+          title: 'New Personal Announcement',
+          body: message,
+          ...(image_url && { imageUrl: image_url })
+        };
+        await sendPushNotification(user.fcm_token, notificationPayload);
+      }
+    } else {
+      // Group announcement
+      await pool.query(
+        `INSERT INTO notifications (sender_id, recipient_id, target_group, message, type, image_url, is_read)
+         VALUES (?, NULL, ?, ?, 'announcement', ?, false)`,
+        [sender_id, target_group, message, image_url]
+      );
+
+      let query = "SELECT fcm_token FROM users WHERE fcm_token IS NOT NULL AND fcm_token != ''";
+      let params = [];
+      if (target_group === 'manager' || target_group === 'employee') {
+        query += " AND role = ?";
+        params.push(target_group.slice(0, -1)); // to get 'manager' or 'employee'
+      }
+
+      const [users] = await pool.query(query, params);
+
+      const baseUrl = 'https://zetav-rewards.onrender.com';
+      let fullImageUrl = null;
+      if (image_url) {
+        if (image_url.startsWith('http')) {
+          fullImageUrl = image_url;
+        } else {
+          fullImageUrl = baseUrl + image_url;
+        }
+      }
+
+      const notificationPayload = {
+        title: 'New Announcement',
+        body: message,
+        ...(fullImageUrl && { imageUrl: fullImageUrl }),
+      };
+
+
+      await Promise.all(users.map(user =>
+        sendPushNotification(user.fcm_token, notificationPayload)
+      ));
+    }
+
+    res.status(201).json({ message: 'Announcement sent successfully.' });
+  } catch (err) {
+    console.error('Announcement error:', err);
+    res.status(500).json({ message: 'Failed to send announcement', error: err.message });
+  }
+});
+
+
+router.get('/notifications', verifyToken, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const userRole = req.user.role; 
+
+    
+    const groupsAllowed = ['all']; // everyone sees 'all' notifications
+    if (userRole === 'admin') {
+      groupsAllowed.push('admin');
+    } else if (userRole === 'manager') {
+      groupsAllowed.push('manager');
+    } else if (userRole === 'employee') {
+      groupsAllowed.push('employee');
+    }
+
+    // Get notifications either addressed to this user or targeted to their groups
+    const query = `
+      SELECT id, sender_id, recipient_id, message, type, image_url, is_read, created_at, target_group
+      FROM notifications
+      WHERE (recipient_id = ?)
+         OR (target_group IN (?))
+      ORDER BY created_at DESC
+      LIMIT 50
+    `;
+
+    // Note: For mysql2, to bind array, pass [userId, groupsAllowed] as params will work
+    const [notifications] = await pool.query(query, [userId, groupsAllowed]);
+
+    // Optionally prepend full URL to relative image URLs
+    const baseUrl = process.env.BASE_URL || 'https://zetav-rewards.onrender.com';
+    const notificationsWithFullUrl = notifications.map(n => ({
+      ...n,
+      image_url: n.image_url
+        ? (n.image_url.startsWith('http') ? n.image_url : baseUrl + n.image_url)
+        : null,
+    }));
+
+    res.json(notificationsWithFullUrl);
+  } catch (err) {
+    console.error('Error fetching notifications:', err);
+    res.status(500).json({ message: 'Failed to fetch notifications', error: err.message });
   }
 });
 
